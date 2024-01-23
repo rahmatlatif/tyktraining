@@ -1,0 +1,254 @@
+AWSTemplateFormatVersion: '2010-09-09'
+
+Parameters:
+  KeyName: 
+    Type: String
+    Default: 
+    Description: 'Enter the name of the key or .pem for SSH access to EC2 instances.'
+  InstanceType:
+    Type: String
+    Default: t2.micro
+    AllowedValues:
+      - t2.micro
+      - t2.medium
+      - t2.large
+      - t2.xlarge
+      - t2.2xlarge
+    Description: 'Select instance size.'
+  InstanceAMIPostgres:
+    Type: String
+    Default: ami-09f03fa5572692399
+    Description: 'AMI for Postgres instances. Adjust accordingly.'
+  InstanceAMIRedis:
+    Type: String
+    Default: ami-09f03fa5572692399
+    Description: 'AMI for Redis instances. Adjust accordingly.'
+  InstanceAMITykDashboard:
+    Type: String
+    Default: ami-09f03fa5572692399
+    Description: 'AMI for Tyk Dashboard instances. Adjust accordingly.'
+  InstanceAMITykGateway:
+    Type: String
+    Default: ami-09f03fa5572692399
+    Description: 'AMI for Tyk Gateway instances. Adjust accordingly.'
+  InstanceAMITykPump:
+    Type: String
+    Default: ami-09f03fa5572692399
+    Description: 'AMI for Tyk Pump instances. Adjust accordingly.'
+
+Resources:
+  EC2InstancePostgres:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref InstanceAMIPostgres
+      InstanceType: !Ref InstanceType
+      KeyName: !Ref KeyName
+      SecurityGroups:
+        - !Ref SecurityGroup
+      Tags: 
+        - Key: "Name"
+          Value: APAC-CSA-Postgres
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          set -ex
+          apt-get update
+          sudo apt-get install gnupg curl -y && sudo apt install net-tools -y
+
+          # Add postgres repo & install
+          sudo sh -c 'echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list'
+          wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo apt-key add -
+          sudo apt-get update
+          sudo apt-get -y install postgresql-13
+          
+          # Create user for Tyk to connect to
+          sudo -u postgres psql -c "CREATE ROLE tyk WITH LOGIN PASSWORD '123456' SUPERUSER;"
+          sudo -u postgres createdb tyk
+
+          sudo useradd -m -s /bin/bash tyk
+          echo "tyk:123456" | sudo chpasswd
+
+          sudo -u tyk psql << EOF
+          ALTER ROLE tyk with PASSWORD '123456';
+          EOF
+          sudo -u tyk createdb tyk_analytics
+
+          # Modify postgresql.conf to listen on 0.0.0.0
+          sudo sed -i "s/^#listen_addresses = 'localhost'/listen_addresses = '0.0.0.0'/" /etc/postgresql/13/main/postgresql.conf
+
+          # Modify pg_hba.conf to allow any host to connect
+          sudo sed -i 's/local   all             all                                     peer/local   all             all                                     md5/' /etc/postgresql/13/main/pg_hba.conf
+          sudo sed -i "s/^host    all             all             127.0.0.1\/32            md5/host    all             all             0.0.0.0\/0           md5/" /etc/postgresql/13/main/pg_hba.conf
+
+          systemctl restart postgresql
+
+  EC2InstanceRedis:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref InstanceAMIRedis
+      InstanceType: !Ref InstanceType
+      KeyName: !Ref KeyName
+      SecurityGroups:
+        - !Ref SecurityGroup
+      Tags: 
+        - Key: "Name"
+          Value: APAC-CSA-Redis
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          set -ex
+          apt-get update
+          sudo apt-get install gnupg curl -y && sudo apt install net-tools -y
+          apt-get install -y redis-server
+
+          # Modify Redis configuration to listen on all network interfaces (0.0.0.0) and disable protected mode
+          sudo sed -i 's/^bind 127.0.0.1 ::1/# bind 127.0.0.1 ::1/' /etc/redis/redis.conf
+          sudo sed -i 's/^protected-mode yes/protected-mode no/' /etc/redis/redis.conf
+          
+          systemctl enable --now redis-server
+          systemctl restart redis-server
+
+  EC2InstanceTykDashboard:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref InstanceAMITykDashboard
+      InstanceType: !Ref InstanceType
+      KeyName: !Ref KeyName
+      SecurityGroups:
+        - !Ref SecurityGroup
+      Tags: 
+        - Key: "Name"
+          Value: APAC-CSA-Tyk-Dashboard
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          set -ex
+          apt-get update
+          sudo apt-get install gnupg curl -y && sudo apt install net-tools -y
+
+          # Install Tyk Dashboard & insert values for dependencies
+          curl -s https://packagecloud.io/install/repositories/tyk/tyk-dashboard/script.deb.sh | sudo bash
+          sudo apt-get install tyk-dashboard=5.2.4
+          DASHBOARD_IP=$(curl http://169.254.169.254/latest/meta-data/public-ipv4 -s)
+          
+          /opt/tyk-dashboard/install/setup.sh \
+          --listenport=3000 \
+          --redishost=${EC2InstanceRedis.PublicIp} \
+          --redisport=6379 \
+          --storage=postgres \
+          --connection_string=postgresql://tyk:123456@${EC2InstancePostgres.PublicIp}:5432/tyk_analytics \
+          --tyk_api_hostname=$DASHBOARD_IP:8080 \
+          --tyk_node_hostname=http://${EC2InstanceTykGateway.PublicIp} \
+          --tyk_node_port=8080 \
+          --portal_root=/portal \
+          --domain="$DASHBOARD_IP"
+
+          sudo systemctl restart tyk-dashboard
+
+  EC2InstanceTykGateway:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref InstanceAMITykGateway
+      InstanceType: !Ref InstanceType
+      KeyName: !Ref KeyName
+      SecurityGroups:
+        - !Ref SecurityGroup
+      Tags: 
+        - Key: "Name"
+          Value: APAC-CSA-Tyk-Gateway
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          set -ex
+          apt-get update
+          sudo apt-get install gnupg curl -y && sudo apt install net-tools -y
+
+          # Install Tyk Gateway & insert values for dependencies
+          curl -s https://packagecloud.io/install/repositories/tyk/tyk-gateway/script.deb.sh | sudo bash
+          sudo apt-get install tyk-gateway=5.2.4
+          /opt/tyk-gateway/install/setup.sh \
+          --dashboard=1 \
+          --listenport=8080 \
+          --redishost=${EC2InstanceRedis.PublicIp} \
+          --redisport=6379
+
+          sudo systemctl restart tyk-gateway
+  
+  EC2InstanceTykPump:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref InstanceAMITykPump
+      InstanceType: !Ref InstanceType
+      KeyName: !Ref KeyName
+      SecurityGroups:
+        - !Ref SecurityGroup
+      Tags: 
+        - Key: "Name"
+          Value: APAC-CSA-Tyk-Pump
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          set -ex
+          apt-get update
+          sudo apt-get install gnupg curl -y && sudo apt install net-tools -y
+
+          # Install Tyk Pump & insert values for dependencies
+          curl -s https://packagecloud.io/install/repositories/tyk/tyk-pump/script.deb.sh | sudo bash
+          sudo apt-get install tyk-pump=1.8.3
+
+          sudo /opt/tyk-pump/install/setup.sh \
+          --redishost=${EC2InstanceRedis.PublicIp} \
+          --redisport=6379 \
+          --postgres="host=${EC2InstancePostgres.PublicIp} port=5432 user=tyk password=123456 dbname=tyk_analytics"
+          
+          # Helper script failing for pump, used sed to add in values for pump
+          sed -i 's/SQL_CONNECTION_STRING/user=tyk password=123456 host=${EC2InstancePostgres.PublicIp} port=5432 database=tyk_analytics/g' /opt/tyk-pump/pump.conf
+
+          sudo systemctl restart tyk-pump
+   
+  SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow SSH and Postgres/Redis/TykDashboard access
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 6379
+          ToPort: 6379
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 3000
+          ToPort: 3000
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 8080
+          ToPort: 8080
+          CidrIp: 0.0.0.0/0
+
+Outputs:
+  EC2InstancePostgresPublicIp:
+    Description: 'Public IP address of the Postgres instance.'
+    Value: !GetAtt EC2InstancePostgres.PublicIp
+
+  EC2InstanceRedisPublicIp:
+    Description: 'Public IP address of the Redis instance.'
+    Value: !GetAtt EC2InstanceRedis.PublicIp
+
+  EC2InstanceTykDashboardPublicIp:
+    Description: 'Public IP address of the Tyk Dashboard instance.'
+    Value: !GetAtt EC2InstanceTykDashboard.PublicIp
+
+  EC2InstanceTykGatewayPublicIp:
+    Description: 'Public IP address of the Tyk Gateway instance.'
+    Value: !GetAtt EC2InstanceTykGateway.PublicIp
+
+  EC2InstanceTykPumpPublicIp:
+    Description: 'Public IP address of the Tyk Pump instance.'
+    Value: !GetAtt EC2InstanceTykPump.PublicIp
