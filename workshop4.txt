@@ -1,0 +1,49 @@
+Workshop 4 - Retrieving Logs, configuration files and logging 
+
+CloudFormation Ubuntu
+
+*Assuming you have already SSH into the EC2 instance*
+
+******Configuration Files*********
+Configuration files are stored in /opt/{name-of-tyk-component}/{nameofcomponent}.conf
+
+Use a text editor to make changes to the configuration. 
+Refer to below documentation for configuration value descriptions
+
+******Retrieving Logs********
+Logs are captured in /var/log/syslog
+
+Use sudo grep "tyk" /var/log/syslog to filter Tyk related logs
+Use sudo grep "tyk" /var/log/syslog | sudo tee /var/log/tyk_logs.txt to export to a text file
+sudo grep "tyk" /var/log/syslog | sudo tee -a /var/log/tyk_logs.txt to append new log lines to existing text file
+
+********Setting Logging Verbosity**********
+
+By default, logging verbosity is "info"
+
+For Gateway, set "log_level": "debug"
+
+For all other components:
+
+Find service file
+sudo find /etc/systemd/system/ -name "tyk-dashboard.service"
+
+Edit service file
+sudo nano /etc/systemd/system/tyk-dashboard.service
+
+Set in [Service] section
+Environment="TYK_LOGLEVEL=debug"
+
+Reload daemon
+sudo systemctl daemon-reload
+
+Restart Tyk component
+sudo systemctl restart tyk-dashboard
+
+Notes:
+Dashboard: tyk-dashboard
+Pump: tyk-pump
+MDCB: tyk-sink
+
+
+
