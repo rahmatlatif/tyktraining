@@ -11,6 +11,11 @@ CloudFormation templates will deploy each Tyk component standalone in separate E
 5. Access the public URL of the Dashboard and add in the license key into the text field.
 6. Bootstrap the deployment (add in organisation name and admin user details)
 
+
+Note: When creating an API, ensure you add the GATEWAY HOSTNAME in the custom domain section of the API.
+![Screenshot 2024-01-26 at 3 55 43 PM](https://github.com/rahmatlatif/tyktraining/assets/39336416/6c25c772-f77a-4620-a118-94b04b0668e3)
+
+
 Workshop 1: Foundational Tyk Usage
 - Creating an API: https://tyk.io/docs/getting-started/create-api/#tutorial-create-an-api-with-the-dashboard
 - Securing an API: https://tyk.io/docs/getting-started/create-security-policy/#tutorial-create-a-security-policy-with-the-dashboard
